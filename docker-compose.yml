@@ -1,0 +1,71 @@
+services:
+
+  prefect_db:
+    image: postgres:16.3-alpine3.20
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: ${PREFECT_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${PREFECT_POSTGRES_USER}
+      POSTGRES_DB: ${PREFECT_POSTGRES_DB}
+    volumes:
+      - prefectdb:/var/lib/postgresql/data
+      - ./prefect_server/db_scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready" ]
+  prefect_server:
+    build:
+      context: ./prefect_server
+      dockerfile: Dockerfile
+    depends_on:
+      prefect_db:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./prefect_server:/app
+    command: >
+      /bin/sh -c 'prefect config set PREFECT_API_DATABASE_CONNECTION_URL="postgresql+asyncpg://${PREFECT_POSTGRES_USER}:${PREFECT_POSTGRES_PASSWORD}@${PREFECT_POSTGRES_SERVER}:5432/${PREFECT_POSTGRES_DB}" && prefect server start --host 0.0.0.0 --port 4200'
+
+  back-end:
+    build:
+      context: ./backend
+      dockerfile: be.Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PREFECT_API_URL=http://${PREFECT_SERVER}:4200/api
+    ports:
+      - "${API_SERVER_PORT}:${API_SERVER_PORT}"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - prefect_server
+    command: >
+      /bin/sh -c "fastapi run main.py --host 0.0.0.0 --port ${API_SERVER_PORT}"
+    # command: >
+    #   /bin/sh -c "while sleep 1000; do :; done"
+  jobs:
+    build:
+      context: ./jobs
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      - prefect_server
+    env_file:
+      - .env
+    environment:
+      - PREFECT_API_URL=http://${PREFECT_SERVER}:4200/api
+    volumes:
+      - ./jobs:/app
+    command: >
+      /bin/sh -c "python get_recommendations.py"
+  mongo:
+    image: mongo
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+volumes:
+  prefectdb:
